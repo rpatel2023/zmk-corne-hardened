@@ -13,11 +13,11 @@ manifest:
 
     - name: zmk-behavior-runtime-sensor-rotate
       url: https://github.com/rpatel2023/zmk-behavior-runtime-sensor-rotate
-      revision: 8b1125ed676c1f5e14145d217984f33d0ebdcef4
+      revision: a92164d9a57d00e419882f77f4d63f61cdcc184c
 
     - name: zmk-module-ble-management
       url: https://github.com/rpatel2023/zmk-module-ble-management
-      revision: 2c59d2f217b32fe9496124c35668ce24e1387c73
+      revision: 09fb98fcb9544904e39f851ebf23b5e7068be311
 
     - name: zmk-module-battery-history
       url: https://github.com/rpatel2023/zmk-module-battery-history
@@ -25,11 +25,11 @@ manifest:
 
     - name: zmk-module-settings-rpc
       url: https://github.com/rpatel2023/zmk-module-settings-rpc
-      revision: 78f86df9e6c5edaf57bef3ccbd7f360cfdf49291
+      revision: a9f868453a5ddd070733dccb8797c2687a6629a1
 
     - name: zmk-module-runtime-input-processor
       url: https://github.com/rpatel2023/zmk-module-runtime-input-processor
-      revision: dbf92f764de8b6ffd60bf5850514302875fe2570
+      revision: 5971adf0e2fa8295a0cb371cbd1f7d76e9c3b7b3
 
   self:
     path: config
