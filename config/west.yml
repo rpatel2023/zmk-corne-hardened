@@ -1,31 +1,35 @@
 manifest:
-  remotes:
-    - name: zmkfirmware
-      url-base: https://github.com/zmkfirmware
-    - name: cormoran
-      url-base: https://github.com/cormoran
   projects:
+    # Custom keyboard hardware definitions preserved in this repository.
     - name: eyelash_corne
-      url: https://github.com/a741725193/zmk-new_corne
-      revision: main
+      url: https://github.com/rpatel2023/zmk-corne-hardened
+      revision: 904bf0d97ab188412cd7e0d8644187ee9b67a03f
+
+    # Custom ZMK core required by this keyboard.
     - name: zmk
-      remote: cormoran
-      revision: v0.3-branch+dya
+      url: https://github.com/rpatel2023/zmk-corne-core
+      revision: 4493783ef88ce2e653bf8217c92ee17140df71e3
       import: app/west.yml
+
     - name: zmk-behavior-runtime-sensor-rotate
-      remote: cormoran
-      revision: main
+      url: https://github.com/rpatel2023/zmk-behavior-runtime-sensor-rotate
+      revision: 8b1125ed676c1f5e14145d217984f33d0ebdcef4
+
     - name: zmk-module-ble-management
-      remote: cormoran
-      revision: zmk-v0.3.0.0
+      url: https://github.com/rpatel2023/zmk-module-ble-management
+      revision: 851661cd21f2aded8ec649da86e01a207dc4b973
+
     - name: zmk-module-battery-history
-      remote: cormoran
-      revision: main
+      url: https://github.com/rpatel2023/zmk-module-battery-history
+      revision: 307755dd2ad4d320e14de162e8e5ef018f29d929
+
     - name: zmk-module-settings-rpc
-      remote: cormoran
-      revision: main
+      url: https://github.com/rpatel2023/zmk-module-settings-rpc
+      revision: 78f86df9e6c5edaf57bef3ccbd7f360cfdf49291
+
     - name: zmk-module-runtime-input-processor
-      remote: cormoran
-      revision: zmk-v0.3.0.0
+      url: https://github.com/rpatel2023/zmk-module-runtime-input-processor
+      revision: dbf92f764de8b6ffd60bf5850514302875fe2570
+
   self:
     path: config
