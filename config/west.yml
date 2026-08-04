@@ -17,7 +17,7 @@ manifest:
 
     - name: zmk-module-ble-management
       url: https://github.com/rpatel2023/zmk-module-ble-management
-      revision: 851661cd21f2aded8ec649da86e01a207dc4b973
+      revision: 2c59d2f217b32fe9496124c35668ce24e1387c73
 
     - name: zmk-module-battery-history
       url: https://github.com/rpatel2023/zmk-module-battery-history
