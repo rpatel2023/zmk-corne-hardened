@@ -1567,6 +1567,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { looksLikeUf2 } from "./checksum.mjs";
+import { BUILD_WORKFLOW_FILE } from "./config.mjs";
 
 function defaultExec(command, args, options) {
   return execFileSync(command, args, { encoding: "utf8", ...options });
@@ -1581,7 +1582,7 @@ export function findLatestRunForHeadSha(repoRoot, headSha, { exec = defaultExec 
     "run",
     "list",
     "--workflow",
-    "build.yml",
+    BUILD_WORKFLOW_FILE,
     "--json",
     "databaseId,headSha,status,conclusion,url",
     "--limit",
