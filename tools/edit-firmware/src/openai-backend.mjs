@@ -19,10 +19,24 @@ const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
     files: {
-      type: "object",
+      type: "array",
       description:
-        "Map of relative file path to that file's COMPLETE new content. Only include a key for a file that actually needs to change.",
-      additionalProperties: { type: "string" },
+        "One entry per file that needs to change. Only include a file that actually needs to change.",
+      items: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "The relative file path, exactly one of the allowed paths.",
+          },
+          content: {
+            type: "string",
+            description: "The file's COMPLETE new content.",
+          },
+        },
+        required: ["path", "content"],
+        additionalProperties: false,
+      },
     },
   },
   required: ["files"],
@@ -84,11 +98,18 @@ export async function callOpenAI(request, currentFiles) {
   }
 
   const payload = await response.json();
-  const outputText = payload.output?.[0]?.content?.[0]?.text;
+  const messageItem = payload.output?.find((item) => item.type === "message");
+  const refusalItem = messageItem?.content?.find((item) => item.type === "refusal");
+  if (refusalItem) {
+    throw new Error(`OpenAI refused the request: ${refusalItem.refusal}`);
+  }
+
+  const textItem = messageItem?.content?.find((item) => item.type === "output_text");
+  const outputText = textItem?.text;
   if (!outputText) {
     throw new Error("OpenAI API response did not include the expected output text.");
   }
 
   const parsed = JSON.parse(outputText);
-  return parsed.files;
+  return Object.fromEntries(parsed.files.map((file) => [file.path, file.content]));
 }
