@@ -33,7 +33,12 @@ export function validateProposedFiles(proposedFiles) {
       );
       continue;
     }
-    const structural = checkStructureForPath(relativePath, proposedFiles[relativePath]);
+    const content = proposedFiles[relativePath];
+    if (typeof content !== "string") {
+      reasons.push(`"${relativePath}" content must be a string, got ${typeof content}.`);
+      continue;
+    }
+    const structural = checkStructureForPath(relativePath, content);
     if (!structural.ok) {
       reasons.push(`"${relativePath}" failed its structural check: ${structural.reason}`);
     }

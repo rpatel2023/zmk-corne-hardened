@@ -50,6 +50,16 @@ test("validateProposedFiles rejects an empty proposal", () => {
   assert.ok(result.reasons.some((r) => r.includes("No files")));
 });
 
+test("validateProposedFiles rejects non-string content without throwing", () => {
+  const result = validateProposedFiles({
+    "config/eyelash_corne.keymap": null,
+    "config/eyelash_corne.conf": 42,
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((r) => r.includes("config/eyelash_corne.keymap") && r.includes("must be a string")));
+  assert.ok(result.reasons.some((r) => r.includes("config/eyelash_corne.conf") && r.includes("must be a string")));
+});
+
 test("stageFiles writes content, diffStaged shows it, discardStaged reverts it", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "edit-firmware-test-"));
   try {
