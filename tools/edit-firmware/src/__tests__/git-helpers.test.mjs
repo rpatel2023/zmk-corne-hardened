@@ -81,6 +81,33 @@ test("revertConfigToTag restores the two editable files to their content at a ta
   }
 });
 
+test("revertConfigToTag called twice in a row to the same tag does not throw, and resolves to the same sha both times", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    execFileSync("git", ["tag", "backup/before-change"], { cwd: workDir });
+
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <2>; };\n");
+    execFileSync("git", ["commit", "-q", "-am", "a risky change"], { cwd: workDir });
+
+    const firstResult = revertConfigToTag(workDir, "backup/before-change");
+    // Second call: the working tree already matches the tag's content, so
+    // `git add` stages nothing and a plain `git commit` would fail with
+    // "nothing to commit, working tree clean". This must resolve cleanly
+    // instead of throwing a raw git error.
+    const secondResult = revertConfigToTag(workDir, "backup/before-change");
+
+    assert.equal(secondResult.sha, firstResult.sha, "a no-op rollback must resolve at the current HEAD, not throw");
+    assert.equal(secondResult.sha, currentHeadSha(workDir));
+    assert.equal(
+      readFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "utf8"),
+      "/ { v = <1>; };\n",
+    );
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
 test("createBackupTag creates a local tag and pushes it to origin (real remote round-trip)", () => {
   const { workDir, remoteDir } = makeRepoWithRemote();
   try {
@@ -163,6 +190,26 @@ test("commitAndPush returns pushed:false (without throwing) when origin is unrea
     assert.equal(result.sha, currentHeadSha(workDir), "the local commit must still exist even if the push failed");
   } finally {
     rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("commitAndPush with paths that have no actual changes does not throw, and reports success at the current sha", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    const shaBefore = currentHeadSha(workDir);
+
+    // No edits made to the file -- staging it is a no-op, so `git add` +
+    // an unconditional `git commit` would fail with "nothing to commit,
+    // working tree clean". Nothing is wrong here, so this must resolve
+    // as success rather than throw.
+    const result = commitAndPush(workDir, "edit: no-op", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.pushed, true, "there is nothing to push, but nothing is wrong either");
+    assert.equal(result.sha, shaBefore, "HEAD must not move when there was nothing to commit");
+    assert.equal(result.sha, currentHeadSha(workDir));
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
   }
 });
 

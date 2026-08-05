@@ -25,6 +25,25 @@ export function currentHeadSha(repoRoot) {
   return git(repoRoot, ["rev-parse", "HEAD"]).trim();
 }
 
+// `git diff --cached --quiet` exits 0 when the index matches HEAD (nothing
+// staged to commit) and 1 when there is a staged difference. Any other
+// exit status means something actually went wrong (not a "clean" outcome),
+// so that case is re-thrown rather than silently treated as "no changes."
+function hasStagedChanges(repoRoot) {
+  try {
+    execFileSync("git", ["diff", "--cached", "--quiet"], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+    return false;
+  } catch (error) {
+    if (error.status === 1) {
+      return true;
+    }
+    throw error;
+  }
+}
+
 export function createBackupTag(repoRoot, slug) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const tagName = `${BACKUP_TAG_PREFIX}${timestamp}-${slug}`;
@@ -42,6 +61,13 @@ export function createBackupTag(repoRoot, slug) {
 
 export function commitAndPush(repoRoot, message, paths) {
   git(repoRoot, ["add", "--", ...paths]);
+  if (!hasStagedChanges(repoRoot)) {
+    // Nothing actually changed for the given paths -- committing here
+    // would just throw "nothing to commit, working tree clean". There is
+    // also nothing to push, so report success: there is nothing wrong,
+    // the requested state (paths committed) already holds.
+    return { pushed: true, sha: currentHeadSha(repoRoot) };
+  }
   git(repoRoot, ["commit", "-m", message]);
   const sha = currentHeadSha(repoRoot);
   try {
@@ -65,6 +91,13 @@ export function listBackupTags(repoRoot) {
 export function revertConfigToTag(repoRoot, tagName) {
   git(repoRoot, ["checkout", tagName, "--", ...ALLOWED_EDIT_PATHS]);
   git(repoRoot, ["add", "--", ...ALLOWED_EDIT_PATHS]);
+  if (!hasStagedChanges(repoRoot)) {
+    // The editable files already match the tag's content -- e.g. this is
+    // a repeat/no-op rollback, or a rollback to the tag the tree is
+    // already at. Nothing to commit; resolve cleanly at the current HEAD
+    // rather than throwing "nothing to commit, working tree clean".
+    return { sha: currentHeadSha(repoRoot) };
+  }
   git(repoRoot, ["commit", "-m", `rollback: restore config to ${tagName}`]);
   return { sha: currentHeadSha(repoRoot) };
 }
