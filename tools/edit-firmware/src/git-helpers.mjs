@@ -53,7 +53,7 @@ export function createBackupTag(repoRoot, slug) {
   } catch (error) {
     git(repoRoot, ["tag", "-d", tagName]);
     throw new Error(
-      `Failed to push backup tag "${tagName}" to origin -- aborting before making any edit. Underlying error: ${error.message}`,
+      `Failed to push backup tag "${tagName}" to origin -- aborting before committing this edit. Underlying error: ${error.message}`,
     );
   }
   return tagName;
@@ -65,16 +65,25 @@ export function commitAndPush(repoRoot, message, paths) {
     // Nothing actually changed for the given paths -- committing here
     // would just throw "nothing to commit, working tree clean". There is
     // also nothing to push, so report success: there is nothing wrong,
-    // the requested state (paths committed) already holds.
-    return { pushed: true, sha: currentHeadSha(repoRoot) };
+    // the requested state (paths committed) already holds. `committed:
+    // false` lets callers distinguish this no-op from a real commit, so
+    // they don't report a build as "triggered" when nothing was pushed.
+    return { pushed: true, committed: false, sha: currentHeadSha(repoRoot) };
   }
-  git(repoRoot, ["commit", "-m", message]);
+  // The pathspec on `commit` (not just on the preceding `add`) is load-
+  // bearing: it scopes the commit to exactly these paths' current content,
+  // regardless of anything else already sitting in the index (e.g. a change
+  // to config/west.yml the caller staged before running this tool). Without
+  // it, `git commit` commits the whole index, which would let unrelated,
+  // unvalidated content ride along into a pushed commit that triggers a
+  // real CI build.
+  git(repoRoot, ["commit", "-m", message, "--", ...paths]);
   const sha = currentHeadSha(repoRoot);
   try {
     git(repoRoot, ["push", "origin", "HEAD"]);
-    return { pushed: true, sha };
+    return { pushed: true, committed: true, sha };
   } catch {
-    return { pushed: false, sha };
+    return { pushed: false, committed: true, sha };
   }
 }
 

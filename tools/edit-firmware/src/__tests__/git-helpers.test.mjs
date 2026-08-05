@@ -154,6 +154,7 @@ test("commitAndPush stages, commits, and pushes the given paths to origin (real 
     const result = commitAndPush(workDir, "edit: bump v", ["config/eyelash_corne.keymap"]);
 
     assert.equal(result.pushed, true);
+    assert.equal(result.committed, true, "a real change must report committed:true");
     assert.equal(result.sha, currentHeadSha(workDir));
 
     // Verify the commit actually reached the remote, by cloning it fresh.
@@ -187,6 +188,7 @@ test("commitAndPush returns pushed:false (without throwing) when origin is unrea
     const result = commitAndPush(workDir, "edit: offline change", ["config/eyelash_corne.keymap"]);
 
     assert.equal(result.pushed, false);
+    assert.equal(result.committed, true, "the local commit happened even though the push failed");
     assert.equal(result.sha, currentHeadSha(workDir), "the local commit must still exist even if the push failed");
   } finally {
     rmSync(workDir, { recursive: true, force: true });
@@ -205,8 +207,51 @@ test("commitAndPush with paths that have no actual changes does not throw, and r
     const result = commitAndPush(workDir, "edit: no-op", ["config/eyelash_corne.keymap"]);
 
     assert.equal(result.pushed, true, "there is nothing to push, but nothing is wrong either");
+    assert.equal(result.committed, false, "a no-op must report committed:false so callers don't claim a build was triggered");
     assert.equal(result.sha, shaBefore, "HEAD must not move when there was nothing to commit");
     assert.equal(result.sha, currentHeadSha(workDir));
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("commitAndPush does not sweep unrelated already-staged content into the commit (pathspec regression)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    // Simulate a file outside the tool's allowlist that the user happened
+    // to already `git add` before running this tool (e.g. an in-progress,
+    // unrelated edit to config/west.yml). This must never ride along into
+    // a commit that this tool pushes -- that would let unvalidated content
+    // reach the real remote and trigger a real CI build the user never
+    // saw or approved.
+    writeFileSync(path.join(workDir, "unrelated.txt"), "unrelated pre-existing change\n");
+    execFileSync("git", ["add", "unrelated.txt"], { cwd: workDir });
+
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <9>; };\n");
+
+    const result = commitAndPush(workDir, "edit: scoped commit", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.committed, true);
+    const committedPaths = execFileSync(
+      "git",
+      ["diff-tree", "--no-commit-id", "--name-only", "-r", result.sha],
+      { cwd: workDir, encoding: "utf8" },
+    ).trim().split("\n").filter(Boolean);
+
+    assert.deepEqual(
+      committedPaths,
+      ["config/eyelash_corne.keymap"],
+      "the commit must contain only the requested path, not the unrelated staged file",
+    );
+
+    // The unrelated file's staged addition must survive untouched --
+    // neither committed nor discarded, exactly as the user left it.
+    const statusAfter = execFileSync("git", ["status", "--porcelain", "--", "unrelated.txt"], {
+      cwd: workDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(statusAfter, "A  unrelated.txt", "the unrelated staged file must remain staged, untouched by the commit");
   } finally {
     rmSync(workDir, { recursive: true, force: true });
     rmSync(remoteDir, { recursive: true, force: true });

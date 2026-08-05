@@ -47,6 +47,20 @@ async function confirm(promptText) {
   return answer.trim().toLowerCase() === "y";
 }
 
+// `git status --porcelain` on the two allowed paths is non-empty if the
+// user already has uncommitted edits sitting there. stageFiles() would
+// silently overwrite those, and discardStaged()'s `git checkout --` only
+// restores to the last *commit* -- so a decline afterward would silently
+// destroy the user's own pre-existing, never-committed work. Refusing up
+// front is the only safe option; there is no revert target to fall back to.
+function hasUncommittedChanges(root, paths) {
+  const output = execFileSync("git", ["status", "--porcelain", "--", ...paths], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  return output.trim().length > 0;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const backendFlagIndex = args.indexOf("--backend");
@@ -66,9 +80,66 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+
+  // Shared mutable state with the signal handlers below: `staged` becomes
+  // true the moment the LLM's proposed content is actually written into the
+  // real working tree, and `approved` becomes true only once the person
+  // running this has typed "y". Anything that ends the process while
+  // staged is true and approved is false -- a thrown error, or Ctrl+C at
+  // the confirmation prompt -- must leave the working tree exactly as it
+  // was, never sitting mid-way with unapproved content on disk.
+  let staged = false;
+  let approved = false;
+  let changedPaths = [];
+  let shuttingDown = false;
+
+  const revertUnapprovedStagedContent = () => {
+    if (staged && !approved) {
+      try {
+        discardStaged(root, changedPaths);
+        staged = false;
+      } catch (revertError) {
+        console.error(`Failed to revert unapproved changes: ${revertError.message}`);
+      }
+    }
+  };
+
+  // Node does not run pending try/finally blocks on SIGINT/SIGTERM unless a
+  // handler is registered -- without this, Ctrl+C at the "[y/N]" prompt
+  // (the single most natural way to say "no" to something alarming) would
+  // terminate the process immediately and skip the finally block below,
+  // leaving unapproved LLM content sitting in the real config files.
+  const cleanupAndExit = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`\nReceived ${signal}; cleaning up before exit...`);
+    revertUnapprovedStagedContent();
+    if (existsSync(lockPath)) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Best-effort: a signal-time failure to remove the lock is
+        // reported to the operator via the stale-lock message on next run,
+        // not swallowed silently, but is not itself fatal here.
+        console.error(`Could not remove lock file ${lockPath}; you may need to delete it manually before the next run.`);
+      }
+    }
+    process.exit(130);
+  };
+  process.on("SIGINT", () => cleanupAndExit("SIGINT"));
+  process.on("SIGTERM", () => cleanupAndExit("SIGTERM"));
+
   writeFileSync(lockPath, String(process.pid), "utf8");
 
   try {
+    if (hasUncommittedChanges(root, ALLOWED_EDIT_PATHS)) {
+      console.error(
+        `You have uncommitted changes to ${ALLOWED_EDIT_PATHS.join(" or ")} already -- commit or stash them first, then re-run this tool.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     const currentFiles = Object.fromEntries(
       ALLOWED_EDIT_PATHS.map((relativePath) => [
         relativePath,
@@ -89,21 +160,48 @@ async function main() {
     }
 
     stageFiles(root, proposal.files);
-    const changedPaths = Object.keys(proposal.files);
+    staged = true;
+    changedPaths = Object.keys(proposal.files);
     const diff = diffStaged(root, changedPaths);
     console.log("\nProposed change:\n");
     console.log(diff);
 
-    const approved = await confirm("\nApply this change? [y/N] ");
-    if (!approved) {
-      discardStaged(root, changedPaths);
-      console.log("Discarded. Nothing was written.");
+    console.log(
+      "\nAnswering y will: push a backup tag, commit and push this change, trigger a firmware build, and (if it succeeds) publish a GitHub Release.",
+    );
+    const userSaidYes = await confirm("Apply this change? [y/N] ");
+    if (!userSaidYes) {
+      revertUnapprovedStagedContent();
+      if (staged) {
+        // The revert itself failed (already logged above) -- do not claim
+        // "nothing was written" when the proposed content is still sitting
+        // in the working tree.
+        console.error(`The change is still staged in the working tree because reverting it failed. Manually run: git checkout -- ${changedPaths.join(" ")}`);
+        process.exitCode = 1;
+      } else {
+        console.log("Discarded. Nothing was written.");
+      }
       return;
     }
+    approved = true;
 
     const slug = slugify(request);
-    console.log("Creating and pushing a backup tag before making any change...");
-    const backupTag = createBackupTag(root, slug);
+    console.log("Creating and pushing a backup tag before committing this change...");
+    let backupTag;
+    try {
+      backupTag = createBackupTag(root, slug);
+    } catch (backupError) {
+      // No commit exists yet -- the working tree only has the
+      // staged-but-uncommitted proposed content. Revert it so nothing is
+      // left half-applied when no backup exists to recover from.
+      approved = false;
+      revertUnapprovedStagedContent();
+      console.error(
+        `${backupError.message} The working tree has been reverted -- no edit was committed.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     console.log(`Backup tag pushed: ${backupTag}`);
 
     const commitResult = commitAndPush(root, `firmware: ${request}`, changedPaths);
@@ -112,6 +210,10 @@ async function main() {
         `Change was committed locally (${commitResult.sha}) but the push failed. The backup tag is already safe on origin. Retry "git push" manually, or re-run this tool once network/auth is fixed.`,
       );
       process.exitCode = 1;
+      return;
+    }
+    if (!commitResult.committed) {
+      console.log("Nothing changed -- the proposed content matched what's already there. No commit, no build.");
       return;
     }
     console.log(`Pushed commit ${commitResult.sha}. This triggers build.yml automatically.`);
@@ -137,27 +239,37 @@ async function main() {
     }
 
     console.log("Build succeeded. Downloading artifacts...");
-    const downloadDir = mkdtempSync(path.join(tmpdir(), "edit-firmware-artifacts-"));
-    const artifactPaths = downloadRunArtifacts(root, run.runId, downloadDir);
+    try {
+      const downloadDir = mkdtempSync(path.join(tmpdir(), "edit-firmware-artifacts-"));
+      const artifactPaths = downloadRunArtifacts(root, run.runId, downloadDir);
 
-    const releaseId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${commitResult.sha.slice(0, 7)}`;
-    const releasesDir = path.join(root, RELEASES_DIR);
-    const releaseDir = stageRelease(releasesDir, releaseId, artifactPaths);
-    pruneOldReleases(releasesDir, RELEASE_RETENTION_COUNT);
+      const releaseId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${commitResult.sha.slice(0, 7)}`;
+      const releasesDir = path.join(root, RELEASES_DIR);
+      const releaseDir = stageRelease(releasesDir, releaseId, artifactPaths);
+      pruneOldReleases(releasesDir, RELEASE_RETENTION_COUNT);
 
-    publishRelease(
-      root,
-      backupTag,
-      releaseDir,
-      `Firmware built from commit ${commitResult.sha} for request: ${request}\n\nRollback: node tools/edit-firmware/src/rollback.mjs --to ${backupTag}`,
-    );
+      publishRelease(
+        root,
+        backupTag,
+        releaseDir,
+        `Firmware built from commit ${commitResult.sha} for request: ${request}\n\nRollback: node tools/edit-firmware/src/rollback.mjs --to ${backupTag}`,
+      );
 
-    const manifest = readFileSync(path.join(releaseDir, "SHA256SUMS.txt"), "utf8");
-    console.log("\nFirmware ready.\n");
-    console.log(`Release folder: ${releaseDir}`);
-    console.log(`Checksums:\n${manifest}`);
-    console.log("To flash: put each half in bootloader mode in turn, then copy the matching .uf2 file onto the drive that appears. This step is manual -- nothing here touches the keyboard.");
+      const manifest = readFileSync(path.join(releaseDir, "SHA256SUMS.txt"), "utf8");
+      console.log("\nFirmware ready.\n");
+      console.log(`Release folder: ${releaseDir}`);
+      console.log(`Checksums:\n${manifest}`);
+      console.log("To flash: put each half in bootloader mode in turn, then copy the matching .uf2 file onto the drive that appears. This step is manual -- nothing here touches the keyboard.");
+    } catch (postBuildError) {
+      console.error(
+        `The build succeeded but something went wrong staging the release: ${postBuildError.message}\n` +
+          `The firmware exists in CI -- download it manually from ${run.url}, or re-run this tool once the issue is fixed.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   } finally {
+    revertUnapprovedStagedContent();
     unlinkSync(lockPath);
   }
 }
