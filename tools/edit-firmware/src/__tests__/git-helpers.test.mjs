@@ -1,0 +1,184 @@
+// tools/edit-firmware/src/__tests__/git-helpers.test.mjs
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  currentHeadSha,
+  createBackupTag,
+  commitAndPush,
+  listBackupTags,
+  revertConfigToTag,
+} from "../git-helpers.mjs";
+
+// createBackupTag and commitAndPush both push to a remote, so they are
+// exercised against a local bare repo acting as "origin" rather than a
+// real GitHub remote -- this proves the push mechanics without any
+// network access or real credentials.
+function makeRepoWithRemote() {
+  const remoteDir = mkdtempSync(path.join(tmpdir(), "git-helpers-remote-"));
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main"], { cwd: remoteDir });
+
+  const workDir = mkdtempSync(path.join(tmpdir(), "git-helpers-work-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workDir });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: workDir });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: workDir });
+  // Force LF-only checkouts regardless of the host machine's global git
+  // config (e.g. Windows boxes with core.autocrlf=true) -- these tests
+  // assert on exact file content, so line-ending normalization on
+  // checkout must be disabled for the test repo to be deterministic.
+  execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: workDir });
+  execFileSync("git", ["remote", "add", "origin", remoteDir], { cwd: workDir });
+
+  mkdirSync(path.join(workDir, "config"), { recursive: true });
+  writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <1>; };\n");
+  writeFileSync(path.join(workDir, "config", "eyelash_corne.conf"), "CONFIG_ZMK_SLEEP=y\n");
+  execFileSync("git", ["add", "-A"], { cwd: workDir });
+  execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd: workDir });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: workDir });
+
+  return { workDir, remoteDir };
+}
+
+test("currentHeadSha returns the real HEAD commit sha", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    const sha = currentHeadSha(workDir);
+    const expected = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workDir, encoding: "utf8" }).trim();
+    assert.equal(sha, expected);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("revertConfigToTag restores the two editable files to their content at a tag, as a new commit", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    execFileSync("git", ["tag", "backup/before-change"], { cwd: workDir });
+    const beforeSha = currentHeadSha(workDir);
+
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <2>; };\n");
+    execFileSync("git", ["commit", "-q", "-am", "a risky change"], { cwd: workDir });
+    const afterChangeSha = currentHeadSha(workDir);
+    assert.notEqual(afterChangeSha, beforeSha);
+
+    const result = revertConfigToTag(workDir, "backup/before-change");
+
+    assert.notEqual(result.sha, afterChangeSha, "revert must create a NEW commit, not reset HEAD");
+    assert.equal(
+      readFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "utf8"),
+      "/ { v = <1>; };\n",
+    );
+    // History is preserved -- the risky commit is still reachable, not destroyed.
+    const log = execFileSync("git", ["log", "--oneline"], { cwd: workDir, encoding: "utf8" });
+    assert.match(log, /a risky change/);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("createBackupTag creates a local tag and pushes it to origin (real remote round-trip)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    const tagName = createBackupTag(workDir, "my-change");
+
+    assert.match(tagName, /^backup\/.*-my-change$/);
+
+    const localTags = execFileSync("git", ["tag", "--list", tagName], { cwd: workDir, encoding: "utf8" }).trim();
+    assert.equal(localTags, tagName);
+
+    // Verify the tag actually landed on the remote, not just locally.
+    const remoteTags = execFileSync("git", ["tag", "--list", tagName], { cwd: remoteDir, encoding: "utf8" }).trim();
+    assert.equal(remoteTags, tagName, "backup tag must be pushed to origin, not just created locally");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("createBackupTag throws and cleans up the local tag when the push to origin fails", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    // Simulate an unreachable remote (e.g. network down) without touching
+    // any real network -- delete the bare repo backing "origin".
+    rmSync(remoteDir, { recursive: true, force: true });
+
+    assert.throws(() => createBackupTag(workDir, "doomed"), /Failed to push backup tag/);
+
+    // No dangling local tag should remain after a failed push -- the tool
+    // must abort cleanly before any edit is attempted, not limp forward
+    // with a tag that only half-exists.
+    const localTags = execFileSync("git", ["tag", "--list", "backup/*"], { cwd: workDir, encoding: "utf8" }).trim();
+    assert.equal(localTags, "", "a failed backup tag push must not leave a local tag behind");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("commitAndPush stages, commits, and pushes the given paths to origin (real remote round-trip)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <3>; };\n");
+
+    const result = commitAndPush(workDir, "edit: bump v", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.pushed, true);
+    assert.equal(result.sha, currentHeadSha(workDir));
+
+    // Verify the commit actually reached the remote, by cloning it fresh.
+    const cloneDir = mkdtempSync(path.join(tmpdir(), "git-helpers-clone-"));
+    try {
+      // -c core.autocrlf=false keeps this checkout deterministic regardless
+      // of the host machine's global git config (see note in makeRepoWithRemote).
+      execFileSync("git", ["clone", "-q", "-c", "core.autocrlf=false", remoteDir, cloneDir]);
+      const remoteHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
+      assert.equal(remoteHead, result.sha, "commitAndPush must push HEAD to origin, not just commit locally");
+      assert.equal(
+        readFileSync(path.join(cloneDir, "config", "eyelash_corne.keymap"), "utf8"),
+        "/ { v = <3>; };\n",
+      );
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("commitAndPush returns pushed:false (without throwing) when origin is unreachable, and never force-pushes", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    // Simulate an unreachable remote without touching any real network.
+    rmSync(remoteDir, { recursive: true, force: true });
+
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <4>; };\n");
+    const result = commitAndPush(workDir, "edit: offline change", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.pushed, false);
+    assert.equal(result.sha, currentHeadSha(workDir), "the local commit must still exist even if the push failed");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("listBackupTags returns backup/ tags newest first", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    execFileSync("git", ["tag", "backup/2026-01-01-first"], { cwd: workDir });
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <2>; };\n");
+    execFileSync("git", ["commit", "-q", "-am", "second change"], { cwd: workDir });
+    execFileSync("git", ["tag", "backup/2026-01-02-second"], { cwd: workDir });
+    execFileSync("git", ["tag", "not-a-backup-tag"], { cwd: workDir });
+
+    const tags = listBackupTags(workDir);
+    assert.deepEqual(tags, ["backup/2026-01-02-second", "backup/2026-01-01-first"]);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
