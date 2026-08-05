@@ -69,7 +69,7 @@ and needs no new code to parse a patch format.
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "test": "node --test src/__tests__/"
+    "test": "node --test"
   }
 }
 ```
