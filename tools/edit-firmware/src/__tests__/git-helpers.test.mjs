@@ -258,6 +258,102 @@ test("commitAndPush does not sweep unrelated already-staged content into the com
   }
 });
 
+test("commitAndPush treats a no-op proposal as committed:false even with unrelated content staged elsewhere (path-scoped emptiness check)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    // An index-wide "is anything staged?" check would see this and wrongly
+    // conclude "something is staged," skipping the no-op early return --
+    // which, combined with the pathspec-scoped commit, would then hand
+    // `git commit -- config/eyelash_corne.keymap` literally nothing to
+    // commit for that path and git would exit non-zero, unhandled, *after*
+    // a real backup tag has already been pushed in the real flow.
+    writeFileSync(path.join(workDir, "unrelated.txt"), "unrelated pre-existing change\n");
+    execFileSync("git", ["add", "unrelated.txt"], { cwd: workDir });
+
+    const shaBefore = currentHeadSha(workDir);
+
+    // No edit to the keymap file itself -- a genuine no-op for the path
+    // this call cares about.
+    const result = commitAndPush(workDir, "edit: no-op with noise", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.committed, false, "the no-op path must be reached even though something unrelated is staged");
+    assert.equal(result.pushed, true);
+    assert.equal(result.sha, shaBefore, "HEAD must not move");
+
+    const statusAfter = execFileSync("git", ["status", "--porcelain", "--", "unrelated.txt"], {
+      cwd: workDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(statusAfter, "A  unrelated.txt", "the unrelated staged file must remain untouched");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("revertConfigToTag does not sweep unrelated already-staged content into the rollback commit (pathspec regression)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    execFileSync("git", ["tag", "backup/before-change"], { cwd: workDir });
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <2>; };\n");
+    execFileSync("git", ["commit", "-q", "-am", "a risky change"], { cwd: workDir });
+
+    // Unrelated staged content that must never ride along into (or be
+    // mislabeled as part of) a rollback commit -- the rollback path is the
+    // user's safety net, so this is worse here than in the normal edit path.
+    writeFileSync(path.join(workDir, "unrelated.txt"), "unrelated pre-existing change\n");
+    execFileSync("git", ["add", "unrelated.txt"], { cwd: workDir });
+
+    const result = revertConfigToTag(workDir, "backup/before-change");
+
+    const committedPaths = execFileSync(
+      "git",
+      ["diff-tree", "--no-commit-id", "--name-only", "-r", result.sha],
+      { cwd: workDir, encoding: "utf8" },
+    ).trim().split("\n").filter(Boolean);
+    assert.deepEqual(
+      committedPaths,
+      ["config/eyelash_corne.keymap"],
+      "the rollback commit must contain only the reverted path, not the unrelated staged file",
+    );
+
+    const statusAfter = execFileSync("git", ["status", "--porcelain", "--", "unrelated.txt"], {
+      cwd: workDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(statusAfter, "A  unrelated.txt", "the unrelated staged file must remain staged, untouched by the rollback commit");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("revertConfigToTag no-op rollback does not throw even with unrelated content staged elsewhere (path-scoped emptiness check)", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    execFileSync("git", ["tag", "backup/before-change"], { cwd: workDir });
+    const shaBefore = currentHeadSha(workDir);
+
+    // An index-wide "is anything staged?" check would see this and wrongly
+    // conclude the rollback has something to commit.
+    writeFileSync(path.join(workDir, "unrelated.txt"), "unrelated pre-existing change\n");
+    execFileSync("git", ["add", "unrelated.txt"], { cwd: workDir });
+
+    // The tree already matches the tag -- a genuine no-op rollback.
+    const result = revertConfigToTag(workDir, "backup/before-change");
+
+    assert.equal(result.sha, shaBefore, "a no-op rollback must not move HEAD");
+    const statusAfter = execFileSync("git", ["status", "--porcelain", "--", "unrelated.txt"], {
+      cwd: workDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(statusAfter, "A  unrelated.txt", "the unrelated staged file must remain untouched");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
 test("listBackupTags returns backup/ tags newest first", () => {
   const { workDir, remoteDir } = makeRepoWithRemote();
   try {

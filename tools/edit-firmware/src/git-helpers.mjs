@@ -25,13 +25,25 @@ export function currentHeadSha(repoRoot) {
   return git(repoRoot, ["rev-parse", "HEAD"]).trim();
 }
 
-// `git diff --cached --quiet` exits 0 when the index matches HEAD (nothing
-// staged to commit) and 1 when there is a staged difference. Any other
-// exit status means something actually went wrong (not a "clean" outcome),
-// so that case is re-thrown rather than silently treated as "no changes."
-function hasStagedChanges(repoRoot) {
+// `git diff --cached --quiet -- <paths>` exits 0 when those specific paths
+// match HEAD (nothing staged for them) and 1 when there is a staged
+// difference for at least one of them. Any other exit status means
+// something actually went wrong (not a "clean" outcome), so that case is
+// re-thrown rather than silently treated as "no changes."
+//
+// The pathspec is load-bearing, not cosmetic: an earlier version of this
+// check looked at the whole index (`git diff --cached --quiet` with no
+// pathspec). If the caller (or the user, before running this tool) has
+// something unrelated already staged elsewhere in the repo, an index-wide
+// check reports "something is staged" even when the paths this function's
+// caller actually cares about have no change at all -- which, combined
+// with the pathspec-scoped `git commit` below, made a real no-op for
+// `paths` fall through into `git commit -- <paths>` with literally nothing
+// to commit for those paths, and git exits non-zero. Scoping the check to
+// the same paths as the commit keeps the two in sync.
+function hasStagedChanges(repoRoot, paths) {
   try {
-    execFileSync("git", ["diff", "--cached", "--quiet"], {
+    execFileSync("git", ["diff", "--cached", "--quiet", "--", ...paths], {
       cwd: repoRoot,
       stdio: "ignore",
     });
@@ -61,7 +73,7 @@ export function createBackupTag(repoRoot, slug) {
 
 export function commitAndPush(repoRoot, message, paths) {
   git(repoRoot, ["add", "--", ...paths]);
-  if (!hasStagedChanges(repoRoot)) {
+  if (!hasStagedChanges(repoRoot, paths)) {
     // Nothing actually changed for the given paths -- committing here
     // would just throw "nothing to commit, working tree clean". There is
     // also nothing to push, so report success: there is nothing wrong,
@@ -100,13 +112,18 @@ export function listBackupTags(repoRoot) {
 export function revertConfigToTag(repoRoot, tagName) {
   git(repoRoot, ["checkout", tagName, "--", ...ALLOWED_EDIT_PATHS]);
   git(repoRoot, ["add", "--", ...ALLOWED_EDIT_PATHS]);
-  if (!hasStagedChanges(repoRoot)) {
+  if (!hasStagedChanges(repoRoot, ALLOWED_EDIT_PATHS)) {
     // The editable files already match the tag's content -- e.g. this is
     // a repeat/no-op rollback, or a rollback to the tag the tree is
     // already at. Nothing to commit; resolve cleanly at the current HEAD
     // rather than throwing "nothing to commit, working tree clean".
     return { sha: currentHeadSha(repoRoot) };
   }
-  git(repoRoot, ["commit", "-m", `rollback: restore config to ${tagName}`]);
+  // Same reasoning as commitAndPush's pathspec: without it, `git commit`
+  // would sweep in anything else already staged in the index (e.g. an
+  // unrelated in-progress edit) and label it part of this rollback commit
+  // -- the rollback path is the user's safety net, so a mislabeled commit
+  // here is worse than the equivalent bug in the normal edit path.
+  git(repoRoot, ["commit", "-m", `rollback: restore config to ${tagName}`, "--", ...ALLOWED_EDIT_PATHS]);
   return { sha: currentHeadSha(repoRoot) };
 }

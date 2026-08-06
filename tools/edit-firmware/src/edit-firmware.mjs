@@ -54,9 +54,14 @@ async function confirm(promptText) {
 // destroy the user's own pre-existing, never-committed work. Refusing up
 // front is the only safe option; there is no revert target to fall back to.
 function hasUncommittedChanges(root, paths) {
+  // Piped stdio matches every git invocation in git-helpers.mjs -- without
+  // it, execFileSync's default sends the child's stderr straight to this
+  // process's stderr, which would leak git's own chatter into this tool's
+  // output on any unexpected git error.
   const output = execFileSync("git", ["status", "--porcelain", "--", ...paths], {
     cwd: root,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
   return output.trim().length > 0;
 }
@@ -159,9 +164,18 @@ async function main() {
       return;
     }
 
-    stageFiles(root, proposal.files);
-    staged = true;
+    // `staged`/`changedPaths` are set *before* calling stageFiles, not
+    // after it returns. stageFiles writes each proposed path with a
+    // separate writeFileSync in a loop -- if a later path's write throws
+    // (a file lock from an editor/AV scanner, disk full, ...), an earlier
+    // path may already have unapproved content sitting on disk while
+    // stageFiles itself never returns. Setting these flags first means the
+    // finally block's revert still fires and covers every proposed path,
+    // including one whose write never actually happened -- discardStaged's
+    // `git checkout --` tolerates a path with no modification.
     changedPaths = Object.keys(proposal.files);
+    staged = true;
+    stageFiles(root, proposal.files);
     const diff = diffStaged(root, changedPaths);
     console.log("\nProposed change:\n");
     console.log(diff);
@@ -169,7 +183,25 @@ async function main() {
     console.log(
       "\nAnswering y will: push a backup tag, commit and push this change, trigger a firmware build, and (if it succeeds) publish a GitHub Release.",
     );
-    const userSaidYes = await confirm("Apply this change? [y/N] ");
+    let userSaidYes;
+    try {
+      userSaidYes = await confirm("Apply this change? [y/N] ");
+    } catch (error) {
+      // readline's raw-mode Ctrl+C handling (confirmed against this Node
+      // version's lib/internal/readline/interface.js) checks
+      // listenerCount('SIGINT') on the *Interface* object created in
+      // confirm(), not on `process` -- since nothing listens for 'SIGINT'
+      // on that interface, Ctrl+C here closes the interface itself and
+      // rejects the pending question() with an AbortError, without ever
+      // raising a process-level SIGINT (raw mode suppresses the terminal's
+      // own signal generation, so the SIGINT handlers registered above
+      // never see this interaction at all). Treat it exactly like "N".
+      if (error?.code === "ABORT_ERR" || error?.name === "AbortError") {
+        userSaidYes = false;
+      } else {
+        throw error;
+      }
+    }
     if (!userSaidYes) {
       revertUnapprovedStagedContent();
       if (staged) {
@@ -196,9 +228,18 @@ async function main() {
       // left half-applied when no backup exists to recover from.
       approved = false;
       revertUnapprovedStagedContent();
-      console.error(
-        `${backupError.message} The working tree has been reverted -- no edit was committed.`,
-      );
+      if (staged) {
+        // The revert itself failed (already logged by
+        // revertUnapprovedStagedContent above) -- do not claim the working
+        // tree was reverted when it wasn't.
+        console.error(
+          `${backupError.message} Additionally, reverting the working tree failed -- the change is still staged. Manually run: git checkout -- ${changedPaths.join(" ")}`,
+        );
+      } else {
+        console.error(
+          `${backupError.message} The working tree has been reverted -- no edit was committed.`,
+        );
+      }
       process.exitCode = 1;
       return;
     }
