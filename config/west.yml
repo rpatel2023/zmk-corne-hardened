@@ -43,12 +43,20 @@ manifest:
 
     # Explicit pin so it doesn't fall back to whatever revision
     # zmk-feature-runtime-combo's own manifest happens to import. Fork of
-    # cormoran/zmk-feature-custom-settings, patched to SECURED and with
-    # the configdefault Kconfig syntax (Zephyr v4.1+ only) replaced by the
-    # portable config+default form our v3.5-based zmk core needs.
+    # cormoran/zmk-feature-custom-settings on the v3.5-compat branch,
+    # patched to SECURED. Pinned to the last upstream commit *before*
+    # "Split setting descriptors into const flash meta + compact RAM
+    # state" (d1b664434a), which started using zephyr_linker_sources(
+    # ROM_SECTIONS ...) -- a location keyword that doesn't exist before
+    # Zephyr v4.1 (our zmk core uses v3.5.0+zmk-fixes). Verified this
+    # commit still has every API runtime-combo calls (array/behavior
+    # setting macros, save/discard scope, etc). Cost: the MAIN_STACK_SIZE
+    # boot-stack-overflow fix from a later upstream commit isn't present
+    # here since it's a plain Kconfig default -- replicated directly via
+    # CONFIG_MAIN_STACK_SIZE in eyelash_corne_left.conf instead.
     - name: zmk-feature-custom-settings
       url: https://github.com/rpatel2023/zmk-feature-custom-settings
-      revision: 2f81750ad760dca43e754388e80c653d1deee812
+      revision: e953267296755769c82cac2a5dfbb34af050b813
 
     # Devtool module (position/keycode event tap) for physical-key-press
     # selection during keymap editing. Fork of cormoran/zmk-module-devtool,
