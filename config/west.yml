@@ -1,4 +1,8 @@
 manifest:
+  remotes:
+    - name: cormoran
+      url-base: https://github.com/cormoran
+
   projects:
     # Custom keyboard hardware definitions preserved in this repository.
     - name: eyelash_corne
@@ -30,6 +34,14 @@ manifest:
     - name: zmk-module-runtime-input-processor
       url: https://github.com/rpatel2023/zmk-module-runtime-input-processor
       revision: 5971adf0e2fa8295a0cb371cbd1f7d76e9c3b7b3
+
+    # TEMPORARY: compile-only test of runtime combo editing on the v0.3-branch+dya
+    # line. Not verified upstream against v0.3 (only tested against main+custom-studio-protocol).
+    # See try/runtime-combo-compile branch.
+    - name: zmk-feature-runtime-combo
+      remote: cormoran
+      revision: d9490e7b5d41c516221d131241009e81740efcee
+      import: true
 
   self:
     path: config
