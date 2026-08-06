@@ -25,6 +25,31 @@ export function currentHeadSha(repoRoot) {
   return git(repoRoot, ["rev-parse", "HEAD"]).trim();
 }
 
+// `git status --porcelain` on the two allowed paths is non-empty if the
+// user already has uncommitted edits sitting there. stageFiles() would
+// silently overwrite those, and discardStaged()'s `git checkout --` only
+// restores to the last *commit* -- so a decline afterward would silently
+// destroy the user's own pre-existing, never-committed work. Refusing up
+// front is the only safe option; there is no revert target to fall back to.
+//
+// The same hazard applies to rollback's revertConfigToTag, whose
+// `git checkout <tag> -- <paths>` overwrites uncommitted content in those
+// paths with no recovery path at all (no stash entry, no reflog entry,
+// nothing in the object DB). Both entry points guard with this, which is
+// why it lives here rather than in either one of them.
+export function hasUncommittedChanges(root, paths) {
+  // Piped stdio matches every git invocation in git-helpers.mjs -- without
+  // it, execFileSync's default sends the child's stderr straight to this
+  // process's stderr, which would leak git's own chatter into this tool's
+  // output on any unexpected git error.
+  const output = execFileSync("git", ["status", "--porcelain", "--", ...paths], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return output.trim().length > 0;
+}
+
 // `git diff --cached --quiet -- <paths>` exits 0 when those specific paths
 // match HEAD (nothing staged for them) and 1 when there is a staged
 // difference for at least one of them. Any other exit status means

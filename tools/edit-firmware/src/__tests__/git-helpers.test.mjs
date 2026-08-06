@@ -11,6 +11,7 @@ import {
   commitAndPush,
   listBackupTags,
   revertConfigToTag,
+  hasUncommittedChanges,
 } from "../git-helpers.mjs";
 
 // createBackupTag and commitAndPush both push to a remote, so they are
@@ -348,6 +349,49 @@ test("revertConfigToTag no-op rollback does not throw even with unrelated conten
       encoding: "utf8",
     }).trim();
     assert.equal(statusAfter, "A  unrelated.txt", "the unrelated staged file must remain untouched");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("hasUncommittedChanges is false on a clean tree and true for both unstaged and staged edits to the given paths", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  const editable = ["config/eyelash_corne.keymap", "config/eyelash_corne.conf"];
+  try {
+    assert.equal(hasUncommittedChanges(workDir, editable), false, "a freshly committed tree is clean");
+
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <7>; };\n");
+    assert.equal(hasUncommittedChanges(workDir, editable), true, "an unstaged edit counts as uncommitted");
+
+    // `git status --porcelain` reports staged-but-uncommitted content too;
+    // staging is not committing, so this must stay true. discardStaged's
+    // `git checkout --` would not restore it either.
+    execFileSync("git", ["add", "--", "config/eyelash_corne.keymap"], { cwd: workDir });
+    assert.equal(hasUncommittedChanges(workDir, editable), true, "a staged-but-uncommitted edit still counts");
+
+    execFileSync("git", ["commit", "-q", "-m", "now committed"], { cwd: workDir });
+    assert.equal(hasUncommittedChanges(workDir, editable), false, "committing clears it");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("hasUncommittedChanges is scoped to the given paths and ignores dirt elsewhere in the repo", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  try {
+    // Assert on absence: an unscoped `git status --porcelain` would see
+    // this and wrongly refuse every edit/rollback run whenever anything
+    // unrelated in the repo happened to be dirty.
+    writeFileSync(path.join(workDir, "unrelated.txt"), "unrelated dirty content\n");
+    execFileSync("git", ["add", "unrelated.txt"], { cwd: workDir });
+
+    assert.equal(
+      hasUncommittedChanges(workDir, ["config/eyelash_corne.keymap", "config/eyelash_corne.conf"]),
+      false,
+      "dirt outside the given paths must not register",
+    );
   } finally {
     rmSync(workDir, { recursive: true, force: true });
     rmSync(remoteDir, { recursive: true, force: true });

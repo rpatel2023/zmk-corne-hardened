@@ -10,8 +10,8 @@
  */
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { RELEASES_DIR } from "./config.mjs";
-import { listBackupTags, revertConfigToTag } from "./git-helpers.mjs";
+import { ALLOWED_EDIT_PATHS, RELEASES_DIR } from "./config.mjs";
+import { listBackupTags, revertConfigToTag, hasUncommittedChanges } from "./git-helpers.mjs";
 import { listReleases } from "./release-store.mjs";
 
 function repoRoot() {
@@ -85,6 +85,18 @@ function main() {
     const tags = listBackupTags(root);
     if (!tags.includes(tagName)) {
       console.error(`"${tagName}" is not a known backup tag. Run --list to see available tags.`);
+      process.exitCode = 1;
+      return;
+    }
+    // revertConfigToTag's `git checkout <tag> -- <paths>` overwrites the
+    // editable files unconditionally. Uncommitted work in them has no
+    // recovery path whatsoever -- no stash entry, no reflog entry, nothing
+    // in the object DB -- so it must be committed or stashed before the
+    // rollback runs. edit-firmware.mjs guards its own flow the same way.
+    if (hasUncommittedChanges(root, ALLOWED_EDIT_PATHS)) {
+      console.error(
+        `You have uncommitted changes to ${ALLOWED_EDIT_PATHS.join(" or ")} -- commit or stash them first, then re-run rollback.`,
+      );
       process.exitCode = 1;
       return;
     }

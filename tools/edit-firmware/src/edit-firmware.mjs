@@ -23,7 +23,7 @@ import { validateProposedFiles, stageFiles, diffStaged, discardStaged } from "./
 import { proposeEdit } from "./llm-backend.mjs";
 import { callOpenAI } from "./openai-backend.mjs";
 import { callClaude } from "./claude-backend.mjs";
-import { createBackupTag, commitAndPush } from "./git-helpers.mjs";
+import { createBackupTag, commitAndPush, hasUncommittedChanges } from "./git-helpers.mjs";
 import {
   findLatestRunForHeadSha,
   watchRun,
@@ -100,25 +100,6 @@ async function confirm(promptText) {
   } finally {
     rl.close();
   }
-}
-
-// `git status --porcelain` on the two allowed paths is non-empty if the
-// user already has uncommitted edits sitting there. stageFiles() would
-// silently overwrite those, and discardStaged()'s `git checkout --` only
-// restores to the last *commit* -- so a decline afterward would silently
-// destroy the user's own pre-existing, never-committed work. Refusing up
-// front is the only safe option; there is no revert target to fall back to.
-function hasUncommittedChanges(root, paths) {
-  // Piped stdio matches every git invocation in git-helpers.mjs -- without
-  // it, execFileSync's default sends the child's stderr straight to this
-  // process's stderr, which would leak git's own chatter into this tool's
-  // output on any unexpected git error.
-  const output = execFileSync("git", ["status", "--porcelain", "--", ...paths], {
-    cwd: root,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return output.trim().length > 0;
 }
 
 async function main() {
