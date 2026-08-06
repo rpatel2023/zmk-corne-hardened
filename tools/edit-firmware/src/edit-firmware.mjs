@@ -72,14 +72,28 @@ async function confirm(promptText) {
     abortController.abort();
     rl.close();
   });
+  // EOF/closed stdin (piped input, `< /dev/null`, a non-interactive
+  // dispatch) is the other way this prompt can never be answered. Without
+  // this listener the pending question() never settles at all: main()'s
+  // finally block never runs, revertUnapprovedStagedContent() never fires,
+  // and unapproved LLM-authored content is left sitting in the real config
+  // files. Verified directly against Node v24.18.0 -- an interface built
+  // over a stream that is .end()ed without an answer hangs forever with
+  // only the SIGINT listener registered, and settles as a decline with
+  // this one added. No rl.close() call here: 'close' firing means the
+  // interface is already closing.
+  rl.on("close", () => {
+    abortController.abort();
+  });
   try {
     const answer = await rl.question(promptText, { signal: abortController.signal });
     return answer.trim().toLowerCase() === "y";
   } catch (error) {
     if (error?.code === "ABORT_ERR" || error?.name === "AbortError") {
-      // Ctrl+C at the prompt -- treat exactly like answering "N". This is
-      // now the primary, version-independent path; the AbortError catch
-      // around the call site in main() is a second, belt-and-braces layer.
+      // Ctrl+C or a closed/EOF stdin at the prompt -- treat either exactly
+      // like answering "N". This is now the primary, version-independent
+      // path; the AbortError catch around the call site in main() is a
+      // second, belt-and-braces layer.
       return false;
     }
     throw error;
@@ -123,6 +137,19 @@ async function main() {
   const lockPath = path.join(root, LOCK_FILE_PATH);
   if (existsSync(lockPath)) {
     console.error(`Another edit-firmware run appears to be in progress (${lockPath} exists). If you're sure it isn't, delete that file and retry.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Refuse up front rather than spending an API call and writing proposed
+  // content into the working tree in a context where the [y/N] approval
+  // can never be given. confirm()'s 'close' listener makes a non-TTY run
+  // fail safe (it declines and reverts), but failing *early* is better
+  // still: no LLM spend, no working-tree write, no lock file to clean up.
+  // Deliberately placed before writeFileSync(lockPath) below for that
+  // last reason.
+  if (!process.stdin.isTTY) {
+    console.error("edit-firmware requires an interactive terminal -- the [y/N] confirmation cannot be given without one.");
     process.exitCode = 1;
     return;
   }
