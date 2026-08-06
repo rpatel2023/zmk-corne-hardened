@@ -61,10 +61,17 @@ manifest:
     # Devtool module (position/keycode event tap) for physical-key-press
     # selection during keymap editing. Fork of cormoran/zmk-module-devtool,
     # patched to SECURED (was unsecured upstream, including reboot/
-    # bootloader-entry and, if enabled, key injection and event tap).
+    # bootloader-entry and, if enabled, key injection and event tap), and
+    # with the layer-state-changed event tap capture removed: struct
+    # zmk_layer_state_changed on this v3.5.0-based zmk core has no "locked"
+    # field (a newer ZMK core addition). Not needed -- this project's use
+    # case only needs POSITION_STATE_CHANGED capture. LAYER_STATE (a
+    # separate, unrelated RPC feature) is also disabled, for the same
+    # v3.5-core reason, via CONFIG_ZMK_DEVTOOL_LAYER_STATE=n in
+    # eyelash_corne_left.conf.
     - name: zmk-module-devtool
       url: https://github.com/rpatel2023/zmk-module-devtool
-      revision: 6785c2e78eb8eb447a82557e67f2babac819ec4c
+      revision: 40b7246fd9045324aae403885c4080a2e5caea6e
 
   self:
     path: config
