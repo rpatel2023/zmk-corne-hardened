@@ -1,3 +1,4 @@
 node_modules
 releases
 .edit-firmware.lock
+acceptance-run.log
