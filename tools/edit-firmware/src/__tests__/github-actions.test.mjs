@@ -116,16 +116,55 @@ test("publishRelease builds the correct gh release create invocation", () => {
       return "";
     };
 
-    publishRelease("/repo", "backup/2026-01-01-x", releaseDir, "Release notes here", {
+    publishRelease("/repo", "firmware/2026-01-01-x", releaseDir, "Release notes here", {
       exec: fakeExec,
     });
 
     assert.equal(capturedArgs.command, "gh");
     assert.deepEqual(capturedArgs.args.slice(0, 2), ["release", "create"]);
-    assert.ok(capturedArgs.args.includes("backup/2026-01-01-x"));
+    assert.ok(capturedArgs.args.includes("firmware/2026-01-01-x"));
     assert.ok(capturedArgs.args.includes(path.join(releaseDir, "eyelash_corne_left.uf2")));
     assert.ok(capturedArgs.args.includes(path.join(releaseDir, "SHA256SUMS.txt")));
     assert.ok(capturedArgs.args.some((arg) => arg.includes("Release notes here")));
+    // Omitting targetSha must leave the argv exactly as it was before
+    // --target existed -- nothing else in this codebase needs one.
+    assert.ok(!capturedArgs.args.includes("--target"), "no --target flag when targetSha is omitted");
+  } finally {
+    rmSync(releaseDir, { recursive: true, force: true });
+  }
+});
+
+test("publishRelease pins the Release to targetSha with --target when one is given", () => {
+  // Regression guard: the Release used to be created on the pre-change
+  // backup tag, so its tag and "source code" links pointed at the commit
+  // *before* the change while its attached .uf2 files were built from the
+  // commit *after*. --target is what makes gh create the new tag at the
+  // commit the firmware actually came from.
+  const releaseDir = mkdtempSync(path.join(tmpdir(), "gh-publish-target-test-"));
+  try {
+    writeFileSync(path.join(releaseDir, "eyelash_corne_left.uf2"), "fake firmware bytes");
+
+    let capturedArgs = null;
+    const fakeExec = (command, args) => {
+      capturedArgs = { command, args };
+      return "";
+    };
+
+    publishRelease("/repo", "firmware/2026-01-01-x", releaseDir, "notes", {
+      targetSha: "abc1234def5678",
+      exec: fakeExec,
+    });
+
+    const targetIndex = capturedArgs.args.indexOf("--target");
+    assert.notEqual(targetIndex, -1, "--target must be present when targetSha is passed");
+    assert.equal(capturedArgs.args[targetIndex + 1], "abc1234def5678", "--target must carry the build commit's sha");
+
+    // The Release must not be created on the backup tag any more.
+    assert.ok(
+      !capturedArgs.args.some((arg) => typeof arg === "string" && arg.startsWith("backup/")),
+      "the Release tag must not be a backup/ tag",
+    );
+    assert.equal(capturedArgs.args[2], "firmware/2026-01-01-x", "the tag argument is the new firmware/ tag");
   } finally {
     rmSync(releaseDir, { recursive: true, force: true });
   }

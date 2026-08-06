@@ -88,11 +88,25 @@ export function downloadRunArtifacts(repoRoot, runId, destDir, { exec = defaultE
   return downloaded;
 }
 
-export function publishRelease(repoRoot, tagName, releaseDir, notes, { exec = defaultExec } = {}) {
+// `targetSha` pins the Release to a specific commit via `gh`'s --target,
+// which creates the tag at that ref when it doesn't already exist. Without
+// it, `gh release create <tag>` against an *existing* tag publishes the
+// Release on that tag's commit -- so a Release tagged with the pre-change
+// backup tag would point its tag and "source code" links at the revision
+// *before* the change, while the .uf2 files attached to it were built from
+// the revision *after*. Optional so the no-target call shape still works
+// for any caller that genuinely wants tag-defined placement.
+export function publishRelease(
+  repoRoot,
+  tagName,
+  releaseDir,
+  notes,
+  { targetSha, exec = defaultExec } = {},
+) {
   const assetPaths = readdirSync(releaseDir).map((name) => path.join(releaseDir, name));
-  exec(
-    "gh",
-    ["release", "create", tagName, ...assetPaths, "--title", tagName, "--notes", notes],
-    { cwd: repoRoot },
-  );
+  const args = ["release", "create", tagName, ...assetPaths, "--title", tagName, "--notes", notes];
+  if (targetSha) {
+    args.push("--target", targetSha);
+  }
+  exec("gh", args, { cwd: repoRoot });
 }

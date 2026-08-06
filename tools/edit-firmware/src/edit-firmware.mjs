@@ -335,11 +335,19 @@ async function main() {
       const releaseDir = stageRelease(releasesDir, releaseId, artifactPaths);
       pruneOldReleases(releasesDir, RELEASE_RETENTION_COUNT);
 
+      // The Release gets its own new tag pinned to the commit the firmware
+      // was actually built from. Publishing it on `backupTag` instead put
+      // the Release on the pre-change commit -- its tag and "source code"
+      // links pointed at the revision *before* the change, contradicting
+      // the .uf2 files attached to it. The rollback instructions in the
+      // notes still reference backupTag: rolling back should go to the
+      // pre-change state, which is exactly what that tag is for.
       publishRelease(
         root,
-        backupTag,
+        `firmware/${releaseId}`,
         releaseDir,
         `Firmware built from commit ${commitResult.sha} for request: ${request}\n\nRollback: node tools/edit-firmware/src/rollback.mjs --to ${backupTag}`,
+        { targetSha: commitResult.sha },
       );
 
       const manifest = readFileSync(path.join(releaseDir, "SHA256SUMS.txt"), "utf8");
