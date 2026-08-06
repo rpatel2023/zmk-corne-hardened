@@ -179,7 +179,7 @@ test("commitAndPush stages, commits, and pushes the given paths to origin (real 
   }
 });
 
-test("commitAndPush returns pushed:false (without throwing) when origin is unreachable, and never force-pushes", () => {
+test("commitAndPush returns pushed:false (without throwing) when origin is unreachable", () => {
   const { workDir, remoteDir } = makeRepoWithRemote();
   try {
     // Simulate an unreachable remote without touching any real network.
@@ -193,6 +193,62 @@ test("commitAndPush returns pushed:false (without throwing) when origin is unrea
     assert.equal(result.sha, currentHeadSha(workDir), "the local commit must still exist even if the push failed");
   } finally {
     rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("commitAndPush never force-pushes: a diverged origin is left intact and the push is reported as failed", () => {
+  const { workDir, remoteDir } = makeRepoWithRemote();
+  const otherDir = mkdtempSync(path.join(tmpdir(), "git-helpers-other-"));
+  try {
+    // Put a commit on origin that this working copy has never seen, so the
+    // local branch is genuinely diverged and a plain push MUST be rejected
+    // as non-fast-forward. This is the scenario where a force-push would
+    // silently destroy someone else's already-pushed work -- the exact
+    // thing this module promises never to do.
+    execFileSync("git", ["clone", "-q", "-c", "core.autocrlf=false", remoteDir, otherDir]);
+    execFileSync("git", ["config", "user.email", "other@example.com"], { cwd: otherDir });
+    execFileSync("git", ["config", "user.name", "Other"], { cwd: otherDir });
+    writeFileSync(path.join(otherDir, "config", "eyelash_corne.keymap"), "/ { v = <42>; };\n");
+    execFileSync("git", ["commit", "-q", "-am", "someone else's work"], { cwd: otherDir });
+    execFileSync("git", ["push", "-q", "origin", "main"], { cwd: otherDir });
+
+    const originTipBefore = execFileSync("git", ["rev-parse", "main"], {
+      cwd: remoteDir,
+      encoding: "utf8",
+    }).trim();
+
+    // Now make a conflicting local commit and push it through commitAndPush.
+    writeFileSync(path.join(workDir, "config", "eyelash_corne.keymap"), "/ { v = <5>; };\n");
+    const result = commitAndPush(workDir, "edit: diverged change", ["config/eyelash_corne.keymap"]);
+
+    assert.equal(result.committed, true, "the local commit still happens");
+    assert.equal(
+      result.pushed,
+      false,
+      "a non-fast-forward push must be reported as failed, not forced through",
+    );
+
+    // The load-bearing assertion: origin is byte-for-byte where the other
+    // clone left it. With -f / --force / --force-with-lease this would now
+    // be the local commit and "someone else's work" would be unreachable.
+    const originTipAfter = execFileSync("git", ["rev-parse", "main"], {
+      cwd: remoteDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(originTipAfter, originTipBefore, "origin's tip must be completely unchanged");
+    assert.notEqual(originTipAfter, result.sha, "the local commit must NOT have landed on origin");
+
+    // And the other clone's commit is still really there, not just its sha.
+    const originLog = execFileSync("git", ["log", "--oneline", "main"], {
+      cwd: remoteDir,
+      encoding: "utf8",
+    });
+    assert.match(originLog, /someone else's work/, "the other clone's work must survive on origin");
+    assert.doesNotMatch(originLog, /edit: diverged change/, "the rejected commit must not be on origin");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+    rmSync(otherDir, { recursive: true, force: true });
   }
 });
 
