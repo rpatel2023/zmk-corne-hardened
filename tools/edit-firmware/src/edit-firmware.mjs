@@ -42,9 +42,50 @@ function slugify(request) {
 
 async function confirm(promptText) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(promptText);
-  rl.close();
-  return answer.trim().toLowerCase() === "y";
+  const abortController = new AbortController();
+  // readline's raw-mode Ctrl+C key handler checks listenerCount('SIGINT') on
+  // the Interface itself (not `process`) -- confirmed against
+  // lib/internal/readline/interface.js for the Node version installed here.
+  // With zero listeners on the interface, it takes an internal path that
+  // rejects the pending question() via a private `kQuestionReject` symbol --
+  // present starting Node v20.19.5 / v22.19.0 / v24.18.0, but confirmed
+  // ABSENT (by fetching and reading lib/readline/promises.js at each tag)
+  // on other current, in-range versions: v20.19.0, v20.19.1, v22.0.0,
+  // v22.12.0. On an affected version, a pending question() would never
+  // settle at all -- no revert, a stale lock file, a silent exit.
+  //
+  // Registering a listener here instead makes readline take the
+  // `this.emit('SIGINT')` branch, which is identical across every version
+  // checked above -- version-independent by construction, unlike the
+  // private-symbol path. We then settle the pending question() ourselves
+  // through the *public* AbortSignal option on question(), which has also
+  // existed unchanged across that same version range (confirmed the same
+  // way). Verified directly (not just reasoned about): a standalone script
+  // that builds this exact interface+listener+question(signal) shape and
+  // calls `rl.emit('SIGINT')` on it -- mirroring exactly what the raw-mode
+  // handler's `this.emit('SIGINT')` line does -- resolves cleanly to a
+  // decline with no hang, while the same emit on an interface with no
+  // listener registered leaves the question permanently pending (proving
+  // the listener, not some other implicit mechanism, is what causes the
+  // clean settlement).
+  rl.on("SIGINT", () => {
+    abortController.abort();
+    rl.close();
+  });
+  try {
+    const answer = await rl.question(promptText, { signal: abortController.signal });
+    return answer.trim().toLowerCase() === "y";
+  } catch (error) {
+    if (error?.code === "ABORT_ERR" || error?.name === "AbortError") {
+      // Ctrl+C at the prompt -- treat exactly like answering "N". This is
+      // now the primary, version-independent path; the AbortError catch
+      // around the call site in main() is a second, belt-and-braces layer.
+      return false;
+    }
+    throw error;
+  } finally {
+    rl.close();
+  }
 }
 
 // `git status --porcelain` on the two allowed paths is non-empty if the
@@ -185,17 +226,14 @@ async function main() {
     );
     let userSaidYes;
     try {
+      // confirm() now registers its own interface-level 'SIGINT' listener
+      // and settles Ctrl+C as a decline internally on every Node version in
+      // range (see the comment inside confirm() for why that's the primary
+      // mechanism now, not this catch). This catch remains as a second,
+      // belt-and-braces layer in case an AbortError of this shape ever
+      // surfaces some other way.
       userSaidYes = await confirm("Apply this change? [y/N] ");
     } catch (error) {
-      // readline's raw-mode Ctrl+C handling (confirmed against this Node
-      // version's lib/internal/readline/interface.js) checks
-      // listenerCount('SIGINT') on the *Interface* object created in
-      // confirm(), not on `process` -- since nothing listens for 'SIGINT'
-      // on that interface, Ctrl+C here closes the interface itself and
-      // rejects the pending question() with an AbortError, without ever
-      // raising a process-level SIGINT (raw mode suppresses the terminal's
-      // own signal generation, so the SIGINT handlers registered above
-      // never see this interaction at all). Treat it exactly like "N".
       if (error?.code === "ABORT_ERR" || error?.name === "AbortError") {
         userSaidYes = false;
       } else {
