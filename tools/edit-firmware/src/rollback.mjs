@@ -20,11 +20,44 @@ function repoRoot() {
 
 function releaseIdForTag(releases, tagName) {
   // Release folder names are "<timestamp>-<short-sha>"; a backup tag name
-  // is "backup/<timestamp>-<slug>". There's no guaranteed direct name
-  // match, so this looks for a release created at or after the tag's own
-  // timestamp prefix as a best-effort hint, not a strict guarantee.
-  const tagTimestamp = tagName.split("/")[1]?.split("-").slice(0, 1)[0];
-  return releases.find((releaseId) => tagTimestamp && releaseId.startsWith(tagTimestamp)) ?? null;
+  // is "backup/<timestamp>-<slug>". Both timestamps come from
+  // `new Date().toISOString().replace(/[:.]/g, "-")`, which always produces
+  // a fixed-length 24-character string ("YYYY-MM-DDTHH-mm-ss-sssZ"). Fixed-
+  // width ISO-8601 fields sort and compare correctly as plain strings, so
+  // the first 24 characters of each name are directly, lexically
+  // comparable as real timestamps -- there's no guaranteed direct name
+  // match beyond that, so this is a best-effort hint (closest release at
+  // or after the tag's own moment), not a strict guarantee.
+  //
+  // An earlier version of this function only compared the first "-"-split
+  // segment, which -- because the timestamp's own date portion (YYYY-MM-DD)
+  // contains hyphens -- collapsed to just the year (e.g. "2026"). That
+  // matched the newest release from the same *year* regardless of month or
+  // day, silently pointing at the wrong build whenever multiple backup tags
+  // and releases existed across different months of the same year.
+  //
+  // The *correct* match for a given backup tag is the release built
+  // immediately after it: an edit run always creates the backup tag first
+  // and only then commits/builds, so that run's own release is the
+  // closest one with a timestamp >= the tag's -- not just any later
+  // release. A tempting-looking fix that instead does
+  // `releases.find(id => id.slice(0, 24) >= tagTimestamp)` directly on
+  // this newest-first array is still wrong: it stops at the *newest*
+  // release satisfying `>=`, which is the wrong answer the moment more
+  // than one tag/release pair exists -- e.g. tags from January and July
+  // with releases from February and August would still match the January
+  // tag to the August release, because August also satisfies `>= January`
+  // and is examined first (verified concretely before rejecting this
+  // approach -- see the Task 12 fix report). Scanning from the OLDEST end
+  // instead and returning the first (smallest-timestamp) release that
+  // still qualifies correctly pairs January with February and July with
+  // August.
+  const tagTimestamp = tagName.split("/")[1]?.slice(0, 24);
+  if (!tagTimestamp) return null;
+  for (let i = releases.length - 1; i >= 0; i--) {
+    if (releases[i].slice(0, 24) >= tagTimestamp) return releases[i];
+  }
+  return null;
 }
 
 function main() {
