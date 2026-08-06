@@ -43,6 +43,24 @@ Restores the two editable files to a prior backup point as a new commit
 (never rewrites history, never force-pushes) and points you at that
 backup's already-built firmware if one was retained locally.
 
+## Security warning on sensitive .conf changes
+
+Before showing the `[y/N]` prompt, the tool compares the proposed
+`config/eyelash_corne.conf` content against the current file. If a new or
+changed line's key matches a security-relevant prefix (the list lives in
+`SECURITY_SENSITIVE_CONF_PREFIXES` in `src/config.mjs` — things like
+`CONFIG_BT_`, `CONFIG_ZMK_BLE_`, `CONFIG_ZMK_USB_`, `CONFIG_LOG`, and
+`CONFIG_SHELL`), it prints a warning listing the flagged lines and
+requires typing `yes-security` instead of `y` to proceed. A sensitive
+line that's unchanged from the current file is not flagged — only a
+brand-new key, or an existing key with a changed value, trips it.
+
+This is not a correctness or semantic check, and it is not a hard block —
+it's a visibility aid on top of the same manual diff review that gates
+every change. Typing `yes-security` applies the change exactly as typing
+`y` would for a non-flagged one; there is no scenario where this feature
+refuses to let an approved change through.
+
 ## Tests
 
 ```bash

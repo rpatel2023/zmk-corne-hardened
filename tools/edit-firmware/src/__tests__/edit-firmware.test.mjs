@@ -369,6 +369,92 @@ test("registerCleanup hands the caller a revert that undoes staged content (the 
   }
 });
 
+// --- security warning on sensitive .conf changes ------------------------
+//
+// askForApproval() branches on proposal.flaggedLines (computed in
+// proposeAndValidate() via findNewSecuritySensitiveConfLines): a flagged
+// .conf change must request the stronger "yes-security" phrase instead of
+// the default "y", while an unflagged change must behave exactly as before.
+
+const FLAGGED_CONF = "CONFIG_ZMK_SLEEP=n\nCONFIG_BT_CTLR_TX_PWR_PLUS_8=y\n";
+
+test("a proposal that trips the security denylist makes confirm() receive the yes-security expectedAnswer", async () => {
+  const workDir = makeRepo();
+  try {
+    let capturedOptions = "not called";
+    const { deps } = makeDeps({
+      proposeEdit: async () => ({ files: { [CONF]: FLAGGED_CONF }, backend: "fake" }),
+      confirm: async (promptText, options) => {
+        capturedOptions = options;
+        return false;
+      },
+    });
+
+    await runGuardedEdit(workDir, "enable something sensitive", {}, deps);
+
+    assert.notEqual(capturedOptions, "not called", "confirm() must actually have been called");
+    assert.equal(
+      capturedOptions?.expectedAnswer,
+      "yes-security",
+      "a flagged .conf change must request the stronger confirmation phrase",
+    );
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("declining the yes-security prompt on a flagged change reverts the working tree to baseline", async () => {
+  const workDir = makeRepo();
+  try {
+    const { deps, calls } = makeDeps({
+      proposeEdit: async () => ({ files: { [CONF]: FLAGGED_CONF }, backend: "fake" }),
+      confirm: async () => false, // simulates typing anything other than "yes-security"
+    });
+
+    const result = await runGuardedEdit(workDir, "enable something sensitive", {}, deps);
+
+    assert.equal(result.status, "declined");
+    assert.equal(result.exitCode, 0);
+    assertWorkingTreeMatchesBaseline(workDir, "declining a flagged change must revert everything");
+    assert.equal(calls.createBackupTag, 0, "a decline on the flagged path must never push a backup tag");
+    assert.equal(calls.commitAndPush, 0, "a decline on the flagged path must never commit");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("a proposal that does NOT trip the security denylist leaves confirm() on the default y behavior", async () => {
+  const workDir = makeRepo();
+  try {
+    let capturedOptions = "not called";
+    const { deps } = makeDeps({
+      // .conf change present but with no sensitive-prefix key, and a
+      // keymap-only change is covered implicitly since PROPOSED (the
+      // default from makeDeps' proposeEdit) also only touches non-sensitive
+      // content -- this override makes the "no sensitive key" case explicit.
+      proposeEdit: async () => ({
+        files: { [CONF]: "CONFIG_ZMK_IDLE_SLEEP_TIMEOUT=3600000\n" },
+        backend: "fake",
+      }),
+      confirm: async (promptText, options) => {
+        capturedOptions = options;
+        return false;
+      },
+    });
+
+    await runGuardedEdit(workDir, "change idle sleep timeout", {}, deps);
+
+    assert.notEqual(capturedOptions, "not called", "confirm() must actually have been called");
+    assert.equal(
+      capturedOptions?.expectedAnswer,
+      undefined,
+      "an unflagged change must not override expectedAnswer, leaving confirm()'s default \"y\" behavior in place",
+    );
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
 // --- confirm() itself, over real streams -------------------------------
 //
 // These drive the real readline interface rather than a faked confirm(), so

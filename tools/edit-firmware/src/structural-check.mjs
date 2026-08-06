@@ -71,3 +71,37 @@ export function checkStructureForPath(relativePath, content) {
     reason: `Unrecognized file extension for structural check: ${relativePath}`,
   };
 }
+
+function parseLiveConfLines(content) {
+  const lines = new Set();
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    lines.add(line);
+  }
+  return lines;
+}
+
+/**
+ * Returns the proposed .conf lines that (a) match a security-sensitive
+ * prefix and (b) are not already present verbatim (same key AND same
+ * value) in the current content. This catches both a brand-new sensitive
+ * key and a changed value for an already-present sensitive key -- it
+ * does NOT flag a sensitive line that's unchanged from the current file.
+ */
+export function findNewSecuritySensitiveConfLines(currentContent, proposedContent, prefixes) {
+  const currentLines = parseLiveConfLines(currentContent);
+  const flagged = [];
+  for (const rawLine of proposedContent.split("\n")) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    if (currentLines.has(line)) continue;
+    const key = line.slice(0, eq);
+    if (prefixes.some((prefix) => key.startsWith(prefix))) {
+      flagged.push(line);
+    }
+  }
+  return flagged;
+}

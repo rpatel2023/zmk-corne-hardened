@@ -26,8 +26,10 @@ import {
   RELEASES_DIR,
   RELEASE_RETENTION_COUNT,
   LOCK_FILE_PATH,
+  SECURITY_SENSITIVE_CONF_PREFIXES,
 } from "./config.mjs";
 import { validateProposedFiles, stageFiles, diffStaged, discardStaged } from "./apply-patch.mjs";
+import { findNewSecuritySensitiveConfLines } from "./structural-check.mjs";
 import { proposeEdit } from "./llm-backend.mjs";
 import { callOpenAI } from "./openai-backend.mjs";
 import { callClaude } from "./claude-backend.mjs";
@@ -48,7 +50,7 @@ function slugify(request) {
   return request.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 }
 
-export async function confirm(promptText, { input = process.stdin, output = process.stdout } = {}) {
+export async function confirm(promptText, { input = process.stdin, output = process.stdout, expectedAnswer = "y" } = {}) {
   const rl = readline.createInterface({ input, output });
   const abortController = new AbortController();
   // readline's raw-mode Ctrl+C key handler checks listenerCount('SIGINT') on
@@ -95,7 +97,7 @@ export async function confirm(promptText, { input = process.stdin, output = proc
   });
   try {
     const answer = await rl.question(promptText, { signal: abortController.signal });
-    return answer.trim().toLowerCase() === "y";
+    return answer.trim().toLowerCase() === expectedAnswer.toLowerCase();
   } catch (error) {
     if (error?.code === "ABORT_ERR" || error?.name === "AbortError") {
       // Ctrl+C or a closed/EOF stdin at the prompt -- treat either exactly
@@ -182,7 +184,13 @@ async function proposeAndValidate(root, request, options, deps) {
     for (const reason of validation.reasons) deps.error(`  - ${reason}`);
     return null;
   }
-  return proposal;
+
+  const confPath = ALLOWED_EDIT_PATHS.find((p) => p.endsWith(".conf"));
+  const flaggedLines =
+    confPath && proposal.files[confPath] !== undefined
+      ? findNewSecuritySensitiveConfLines(currentFiles[confPath] ?? "", proposal.files[confPath], SECURITY_SENSITIVE_CONF_PREFIXES)
+      : [];
+  return { ...proposal, flaggedLines };
 }
 
 /** Write the proposed content into the real working tree and show the diff. */
@@ -203,8 +211,36 @@ function stageProposal(root, proposal, guard, deps) {
   deps.log(deps.diffStaged(root, guard.state.changedPaths));
 }
 
-/** Prompt for the single "y" that gates every irreversible step below. */
-async function askForApproval(deps) {
+/**
+ * Prompt for the confirmation that gates every irreversible step below.
+ * Normally that's a bare "y"; if the proposal touched a security-sensitive
+ * `.conf` setting (see SECURITY_SENSITIVE_CONF_PREFIXES), this is a soft
+ * warning with extra friction -- not a hard block -- so it instead requires
+ * typing "yes-security" to make the change impossible to approve by reflex.
+ */
+async function askForApproval(proposal, deps) {
+  if (proposal.flaggedLines.length > 0) {
+    deps.error("\n⚠️  SECURITY WARNING ⚠️");
+    deps.error("This change adds or changes security-relevant settings not present in the current config:");
+    for (const line of proposal.flaggedLines) deps.error(`  - ${line}`);
+    deps.error("These can change your keyboard's security posture (e.g. USB/BLE/logging exposure). Review the diff above carefully.");
+    deps.log(
+      '\nTyping "yes-security" will: push a backup tag, commit and push this change, trigger a firmware build, and (if it succeeds) publish a GitHub Release.',
+    );
+    try {
+      // confirm() registers its own interface-level 'SIGINT' and 'close'
+      // listeners and settles both Ctrl+C and a closed/EOF stdin as a
+      // decline internally, on every Node version in range (see the
+      // comment inside confirm() for why that's the primary mechanism now,
+      // not this catch). This catch remains as a second, belt-and-braces
+      // layer in case an AbortError of this shape ever surfaces some other
+      // way.
+      return await deps.confirm('Type "yes-security" to apply anyway, or anything else to cancel: ', { expectedAnswer: "yes-security" });
+    } catch (error) {
+      if (error?.code === "ABORT_ERR" || error?.name === "AbortError") return false;
+      throw error;
+    }
+  }
   deps.log(
     "\nAnswering y will: push a backup tag, commit and push this change, trigger a firmware build, and (if it succeeds) publish a GitHub Release.",
   );
@@ -398,7 +434,7 @@ export async function runGuardedEdit(root, request, options = {}, overrides = {}
 
     stageProposal(root, proposal, guard, deps);
 
-    if (!(await askForApproval(deps))) return reportDecline(guard, deps);
+    if (!(await askForApproval(proposal, deps))) return reportDecline(guard, deps);
     guard.state.approved = true;
 
     return await runApprovedPipeline(root, request, guard, deps);
