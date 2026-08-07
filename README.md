@@ -1,5 +1,14 @@
 # Hardened Eyelash Corne ZMK Configuration
 
+> [!WARNING]
+> **This is NOT the firmware running on the physical keyboard.** This repository
+> targets the `nice_nano_v2` / `nice_view` lineage; the board actually in use is
+> the OLED lineage, built from **[`rpatel2023/zmk-eyelash-corne`](https://github.com/rpatel2023/zmk-eyelash-corne)**
+> (the prod root as of 2026-08-07). Never flash artifacts from this repository
+> onto that board. The hardening work done here lives on in the `rpatel2023/zmk-*`
+> module forks pinned by the prod repo's `west.yml`, and `tools/edit-firmware/`
+> has been ported there.
+
 A reviewed and reproducible ZMK firmware configuration for the Eyelash Peripherals wireless Corne keyboard.
 
 > [!IMPORTANT]
@@ -11,9 +20,9 @@ A reviewed and reproducible ZMK firmware configuration for the Eyelash Periphera
 
 This repository began as a fork of the firmware configuration supplied by the keyboard vendor.
 
-The `main` branch preserves the vendor configuration as a reference.
+The `vendor-snapshot` branch preserves the vendor configuration as a reference.
 
-The `hardening` branch is being reviewed and modified to provide:
+The hardening review (formerly the `hardening` branch, now merged into `main`) provided:
 
 * reproducible builds using pinned dependency commits;
 * a documented firmware supply chain;
@@ -23,7 +32,7 @@ The `hardening` branch is being reviewed and modified to provide:
 * independently built firmware artifacts;
 * published checksums for firmware releases.
 
-Until that review is complete, firmware from this repository should be considered a work in progress.
+The review is complete, but this lineage is retired from active use — see the warning at the top of this file.
 
 ## Supported hardware
 
